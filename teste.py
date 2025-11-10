@@ -1,161 +1,136 @@
 import time
+import numpy as np
 from coppeliasim_zmqremoteapi_client import RemoteAPIClient
-
-# lista de nomes comuns/variantes para tentar encontrar o Kobuki e os motores/laser
-COMMON_BASE_NAMES = [
-    "/kobuki", "kobuki", "/Turtlebot2", "turtlebot2", "kobuki_base", "base_link"
-]
-COMMON_LEFT_NAMES = [
-    "/kobuki/wheel_left_joint", "wheel_left_joint", "wheel_left", "motor_left",
-    "/Turtlebot2/motor_left", "left_wheel", "left_wheel_joint"
-]
-COMMON_RIGHT_NAMES = [
-    "/kobuki/wheel_right_joint", "wheel_right_joint", "wheel_right", "motor_right",
-    "/Turtlebot2/motor_right", "right_wheel", "right_wheel_joint"
-]
-COMMON_LASER_NAMES = [
-    "/kobuki/fastHokuyo", "fastHokuyo", "hokuyo", "Hokuyo", "/kobuki/hokuyo_link",
-    "laser", "hokuyo_link", "/Turtlebot2/Hokuyo"
-]
-
-def try_get_alias_or_name(sim, handle):
-    """Tenta obter o nome/alias de um handle usando métodos diferentes."""
-    name = None
-    try:
-        name = sim.getObjectAlias(handle, 0)
-    except Exception:
-        pass
-    if not name:
-        try:
-            name = sim.getObjectName(handle)
-        except Exception:
-            pass
-    return name
-
-def safe_get_objects_in_tree(sim):
-    """Tenta chamar getObjectsInTree com algumas assinaturas possíveis e retorna lista de handles."""
-    attempts = []
-    # tentativa 1: usar constantes do sim (se existirem)
-    try:
-        handles = sim.getObjectsInTree(sim.handle_scene, sim.handle_all, 0)
-        attempts.append(("handle_scene/handle_all/0", handles))
-    except Exception as e:
-        attempts.append(("handle_scene/handle_all/0 raised", e))
-
-    # tentativa 2: sem o terceiro argumento
-    try:
-        handles = sim.getObjectsInTree(sim.handle_scene, sim.handle_all)
-        attempts.append(("handle_scene/handle_all", handles))
-    except Exception as e:
-        attempts.append(("handle_scene/handle_all raised", e))
-
-    # tentativa 3: tentar obter handle da cena explicitamente (algumas API wrappers precisam)
-    try:
-        scene_handle = sim.getObjectHandle(sim.handle_scene)
-        handles = sim.getObjectsInTree(scene_handle, sim.handle_all, 0)
-        attempts.append(("getObjectHandle(handle_scene)", handles))
-    except Exception as e:
-        attempts.append(("getObjectHandle(handle_scene) raised", e))
-
-    # escolher o primeiro que retornou uma lista
-    for tag, result in attempts:
-        if isinstance(result, (list, tuple)):
-            return result
-    # se nada funcionou, retornar lista vazia e imprimir as tentativas para debug
-    print("Nenhuma chamada getObjectsInTree funcionou. Detalhes das tentativas:")
-    for tag, result in attempts:
-        print(f"  - {tag}: {type(result)} -> {result}")
-    return []
-
-def find_handles_by_iteration(sim):
-    handles = safe_get_objects_in_tree(sim)
-    print(f"Total de handles obtidos: {len(handles)}")
-    names = []
-    for i, h in enumerate(handles):
-        try:
-            name = try_get_alias_or_name(sim, h)
-            if not name:
-                # por fim tenta sim.getObjectAlias com flag 1/2 se disponível
-                try:
-                    name = sim.getObjectAlias(h, 1)
-                except Exception:
-                    pass
-        except Exception:
-            name = None
-        names.append((h, name))
-    # imprimir os primeiros 200 nomes (ou menos)
-    print("\n--- Primeiros objetos encontrados (handle, nome) ---")
-    for h, name in names[:200]:
-        print(f"{h} -> {name}")
-    return names
-
-def try_common_names(sim):
-    found = {}
-    def try_list(lst, label):
-        for candidate in lst:
-            try:
-                h = sim.getObjectHandle(candidate)
-                found[label] = (candidate, h)
-                print(f"Encontrado {label}: '{candidate}' -> handle {h}")
-                return
-            except Exception:
-                # não encontrou esse nome, continua
-                pass
-        print(f"Não encontrou {label} entre as variantes testadas.")
-    print("\n--- Testando nomes comuns diretamente com getObjectHandle ---")
-    try_list(COMMON_BASE_NAMES, "base")
-    try_list(COMMON_LEFT_NAMES, "left_motor")
-    try_list(COMMON_RIGHT_NAMES, "right_motor")
-    try_list(COMMON_LASER_NAMES, "laser")
-    return found
+# Importando os outros arquivos conforme solicitado
+from occupancy_grid import OccupancyGrid
+from visualize_map import visualize_and_save_map
 
 def main():
+    # --- Conexão e Configuração da Simulação Síncrona ---
     client = RemoteAPIClient()
     sim = client.getObject('sim')
+    
+    # Garante que qualquer simulação anterior seja interrompida
+    sim.stopSimulation()
+    time.sleep(1)
+    
+    # Habilita o modo síncrono (stepping mode). O script Python agora controla cada passo da simulação.
+    sim.setStepping(True)
+    
+    # Inicia a simulação
+    sim.startSimulation()
+    print("Simulação iniciada em modo síncrono para teste de movimento.")
+    
+    # Avança um passo para garantir que a simulação está rodando antes do loop
+    sim.step()
 
-    # garantir sim parada antes de iniciar para evitar comportamento estranho
-    try:
-        sim.stopSimulation()
-    except Exception:
-        pass
-    time.sleep(0.5)
+    # --- Obtenção dos Handles ---
+    KOBUKI_NAME = '/kobuki'
+    LEFT_MOTOR_NAME = '/kobuki_leftMotor'
+    RIGHT_MOTOR_NAME = '/kobuki_rightMotor'
+    LASER_NAME = '/fastHokuyo'
 
-    # start (algumas cenas precisam estar rodando para criar objetos dinamicamente)
     try:
-        sim.startSimulation()
-        print("Simulação iniciada.")
+        kobuki_handle = sim.getObject(KOBUKI_NAME)
+        left_motor_handle = sim.getObject(LEFT_MOTOR_NAME)
+        right_motor_handle = sim.getObject(RIGHT_MOTOR_NAME)
+        laser_handle = sim.getObject(KOBUKI_NAME + LASER_NAME)
+        
+        if kobuki_handle == -1: raise ValueError(f"Robô '{KOBUKI_NAME}' não encontrado.")
+        if left_motor_handle == -1: raise ValueError(f"Motor '{LEFT_MOTOR_NAME}' não encontrado.")
+        if right_motor_handle == -1: raise ValueError(f"Motor '{RIGHT_MOTOR_NAME}' não encontrado.")
+        if laser_handle == -1: raise ValueError(f"Laser '{KOBUKI_NAME + LASER_NAME}' não encontrado.")
+
     except Exception as e:
-        print("Não foi possível iniciar a simulação:", e)
-
-    # busca por iteração
-    names = find_handles_by_iteration(sim)
-
-    # busca por nomes comuns
-    found_common = try_common_names(sim)
-
-    # se encontrou handles via nomes comuns, testar movimento (com segurança)
-    if "left_motor" in found_common and "right_motor" in found_common:
-        left_h = found_common["left_motor"][1]
-        right_h = found_common["right_motor"][1]
-        try:
-            print("\nTestando movimento rápido por 1.5s...")
-            sim.setJointTargetVelocity(left_h, 3.0)
-            sim.setJointTargetVelocity(right_h, 3.0)
-            time.sleep(1.5)
-            sim.setJointTargetVelocity(left_h, 0)
-            sim.setJointTargetVelocity(right_h, 0)
-            print("Movimento de teste concluído.")
-        except Exception as e:
-            print("Erro ao tentar aplicar velocidade nos joints:", e)
-    else:
-        print("\nNão foi possível localizar ambos os motores via nomes comuns; veja a lista impressa acima para procurar nomes manualmente na hierarquia da cena.")
-
-    # parar sim ao final
-    try:
+        print(f"ERRO CRÍTICO ao obter handles de objeto: {e}")
         sim.stopSimulation()
-    except Exception:
-        pass
-    print("Fim do debug.")
+        return
 
-if __name__ == "__main__":
+    print("Handles dos objetos obtidos com sucesso.")
+
+    # --- Parâmetros ---
+    simulation_duration = 10  # segundos
+    forward_speed = 1.5       # Velocidade para andar em linha reta
+    MAP_X_MIN, MAP_X_MAX, MAP_Y_MIN, MAP_Y_MAX = -5, 5, -5, 5
+    MAP_RESOLUTION = 0.05
+    NOISE_DISTANCE_STD, NOISE_ANGLE_STD = 0.02, np.deg2rad(0.5)
+    DATA_COLLECT_INTERVAL = 1.0 # Coleta dados a cada 1.0 segundo de simulação
+
+    # --- Loop de Movimento e Coleta de Dados ---
+    print(f"Iniciando movimento e coleta de dados por {simulation_duration} segundos...")
+    start_sim_time = sim.getSimulationTime()
+    last_data_collect_time = start_sim_time
+    collected_data = []
+    
+    try:
+        # Loop principal baseado no tempo da simulação
+        while sim.getSimulationTime() - start_sim_time < simulation_duration:
+            current_sim_time = sim.getSimulationTime()
+            
+            # Define a mesma velocidade para ambos os motores para andar em linha reta
+            sim.setJointTargetVelocity(left_motor_handle, forward_speed)
+            sim.setJointTargetVelocity(right_motor_handle, forward_speed)
+
+            # Coleta de Dados (em intervalos de tempo de SIMULAÇÃO)
+            if current_sim_time - last_data_collect_time > DATA_COLLECT_INTERVAL:
+                print(f"Coletando dados... Tempo de simulação: {int(current_sim_time)}s")
+                last_data_collect_time = current_sim_time
+                
+                robot_pos = sim.getObjectPosition(kobuki_handle, -1)
+                robot_orient_euler = sim.getObjectOrientation(kobuki_handle, -1)
+                robot_pose = (robot_pos[0], robot_pos[1], robot_orient_euler[2])
+                
+                ranges_signal = sim.getStringSignal('hokuyo_range_data')
+                angles_signal = sim.getStringSignal('hokuyo_angle_data')
+                
+                if ranges_signal and angles_signal:
+                    ranges = sim.unpackFloatTable(ranges_signal)
+                    angles = sim.unpackFloatTable(angles_signal)
+                    collected_data.append({'pose': robot_pose, 'ranges': ranges, 'angles': angles})
+            
+            # Comando essencial no modo síncrono: avança a simulação em um passo
+            sim.step()
+
+    except Exception as e:
+        print(f"Ocorreu um erro durante o loop de movimento: {e}")
+    finally:
+        # --- Finalização do Movimento ---
+        print("Tempo de teste concluído.")
+        sim.setJointTargetVelocity(left_motor_handle, 0)
+        sim.setJointTargetVelocity(right_motor_handle, 0)
+        print(f"Navegação concluída. {len(collected_data)} pontos de dados coletados.")
+
+    # --- Mapeamento em Lote (Batch Processing) ---
+    if collected_data:
+        print("Iniciando processamento do mapa. Isso pode levar alguns instantes...")
+        occupancy_map = OccupancyGrid(MAP_X_MIN, MAP_X_MAX, MAP_Y_MIN, MAP_Y_MAX, MAP_RESOLUTION)
+        
+        for i, data_point in enumerate(collected_data):
+            print(f"Processando data point {i+1}/{len(collected_data)}...")
+            
+            robot_pose = data_point['pose']
+            
+            points_relative = []
+            for angle, dist in zip(data_point['angles'], data_point['ranges']):
+                noisy_dist = dist + np.random.normal(0, NOISE_DISTANCE_STD)
+                noisy_angle = angle + np.random.normal(0, NOISE_ANGLE_STD)
+                points_relative.append([noisy_dist * np.cos(noisy_angle), noisy_dist * np.sin(noisy_angle)])
+            
+            x, y, theta = robot_pose
+            rotation_matrix = np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta),  np.cos(theta)]])
+            points_world = np.dot(np.array(points_relative), rotation_matrix.T) + np.array([x, y])
+
+            occupancy_map.update(robot_pose, points_world)
+
+        # --- Geração e Salvamento do Mapa ---
+        print("Mapeamento concluído. Gerando e salvando a imagem.")
+        prob_map = occupancy_map.get_probability_map()
+        visualize_and_save_map(prob_map, "occupancy_map_teste.png")
+        print("Mapa salvo como 'occupancy_map_teste.png'")
+
+    # --- Finalização da Simulação ---
+    sim.stopSimulation()
+    print("Simulação finalizada.")
+
+if __name__ == '__main__':
     main()
