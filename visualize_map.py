@@ -1,53 +1,41 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
-"""
-Carrega um Occupancy Grid salvo (.npz) e exporta uma imagem PNG em escala de cinza,
-onde "mais escuro = maior probabilidade de ocupação".
-Também pode mostrar na tela com matplotlib.
-
-Uso:
-  python visualize_map.py --input maps/grid_final_...npz --output mapa.png --show
-"""
-
-import os
-import argparse
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 
-from occupancy_grid import OccupancyGrid
+def visualize_and_save_map(prob_map, filename):
+    """
+    Visualiza e salva a grade de ocupação como uma imagem.
 
+    Args:
+        prob_map (np.ndarray): O mapa de probabilidade (0 a 1).
+        filename (str): O nome do arquivo para salvar a imagem.
+    """
+    # Inverte as cores: ocupado (alta prob) -> preto, livre (baixa prob) -> branco
+    # A probabilidade vai de 0 (livre) a 1 (ocupado).
+    # O mapa de cores 'gray' mapeia 0 para preto e 1 para branco.
+    # Queremos o contrário, então usamos 1 - prob_map.
+    
+    plt.figure(figsize=(10, 10))
+    
+    # Usamos np.flipud para que a origem (0,0) do mapa fique no canto inferior esquerdo
+    # Usamos .T (transposto) porque o matplotlib plota (linha, coluna) como (y, x)
+    plt.imshow(1 - prob_map.T, cmap='gray', origin='lower')
+    
+    plt.title("Mapa de Grade de Ocupação")
+    plt.xlabel("Células da Grade (X)")
+    plt.ylabel("Células da Grade (Y)")
+    plt.grid(False) # Desativa a grade do matplotlib
+    
+    # Salva a imagem
+    plt.savefig(filename, bbox_inches='tight', pad_inches=0.1)
+    plt.close()
 
-def main():
-    parser = argparse.ArgumentParser(description="Visualização de Occupancy Grid (.npz) -> PNG")
-    parser.add_argument("--input", type=str, required=True, help="Caminho do arquivo .npz salvo")
-    parser.add_argument("--output", type=str, default="", help="Caminho do PNG de saída (opcional)")
-    parser.add_argument("--show", action="store_true", help="Mostra janela interativa com matplotlib")
-    args = parser.parse_args()
+if __name__ == '__main__':
+    # Exemplo de uso (para teste)
+    # Cria um mapa de teste simples
+    test_map = np.zeros((100, 100))
+    test_map[20:40, 30:70] = 0.9  # Área ocupada
+    test_map[60:80, 10:30] = 0.8  # Outra área ocupada
+    test_map = np.clip(test_map + np.random.rand(100, 100) * 0.2, 0, 1) # Adiciona ruído
 
-    if not os.path.isfile(args.input):
-        raise SystemExit(f"Arquivo não encontrado: {args.input}")
-
-    grid = OccupancyGrid.load_npz(args.input)
-    img = grid.to_grayscale_image()
-
-    if args.output:
-        plt.imsave(args.output, img, cmap="gray", vmin=0, vmax=255)
-        print(f"Imagem salva em: {args.output}")
-
-    if args.show or not args.output:
-        plt.figure(figsize=(6, 6))
-        # cmap=gray já mostra 0=preto (ocupado), 255=branco (livre)
-        plt.imshow(img, cmap="gray", origin="lower",
-                   extent=[grid.x_min, grid.x_min + grid.spec.width_m,
-                           grid.y_min, grid.y_min + grid.spec.height_m])
-        plt.colorbar(label="Intensidade (0=ocupado, 255=livre)")
-        plt.title(f"Occupancy Grid (res={grid.spec.resolution} m)")
-        plt.xlabel("x [m]")
-        plt.ylabel("y [m]")
-        plt.tight_layout()
-        plt.show()
-
-
-if __name__ == "__main__":
-    main()
+    visualize_and_save_map(test_map, "test_map.png")
+    print("Mapa de teste salvo como 'test_map.png'")
